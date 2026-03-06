@@ -69,9 +69,9 @@
       "category": "development"
     },
     {
-      "name": "Ascend-opplugin",
+      "name": "ascend-opplugin",
       "description": "Installs op-plugin (torch_npu operator plugin) environment and guides custom NPU operator integration with PyTorch via two generic patterns (no workspace vs workspace+tiling), from kernel implementation through host registration, build, and test.",
-      "source": "./Ascend-opplugin",
+      "source": "./ascend-opplugin",
       "category": "development"
     }
   ]
