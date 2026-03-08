@@ -47,7 +47,7 @@ pipe = DiffusionPipeline.from_pretrained(
 # Attention backend 要先设置，再启用 context parallel
 pipe.transformer.set_attention_backend("_native_npu")
 
-cp_config = ContextParallelConfig(ring_degree=world_size)
+cp_config = ContextParallelConfig(ulysses_degree=world_size)
 pipe.transformer.enable_parallelism(config=cp_config)
 
 image = pipe(
@@ -82,7 +82,7 @@ pipe.transformer.set_attention_backend("_native_npu")
 
 ## 4. Ulysses Attention
 
-除了 Ring Attention，也可以尝试 Ulysses Attention：
+默认推荐优先尝试 Ulysses Attention：
 
 ```python
 from diffusers import ContextParallelConfig
@@ -133,6 +133,12 @@ python3 -c "import torch, torch_npu; print(torch.npu.is_available(), torch.npu.d
 - 若不存在（如 `0.35.2`），改用常规多进程推理或升级到支持版本。
 
 ## 6. Data Parallel 退化路径
+
+如果你明确想改用 Ring Attention，则可显式指定：
+
+```python
+pipe.transformer.enable_parallelism(config=ContextParallelConfig(ring_degree=2))
+```
 
 当你不希望直接改动 transformer 的 context parallel 配置，或者只是想先验证多卡 HCCL 拉起是否正常时，可以先用最简单的多进程 data parallel：
 

@@ -247,7 +247,7 @@ pipe = DiffusionPipeline.from_pretrained(
 # NPU 推荐使用 _native_npu；CUDA 示例通常使用 _native_cudnn
 pipe.transformer.set_attention_backend("_native_npu")
 
-cp_config = ContextParallelConfig(ring_degree=world_size)
+cp_config = ContextParallelConfig(ulysses_degree=world_size)
 pipe.transformer.enable_parallelism(config=cp_config)
 
 image = pipe(
@@ -285,10 +285,17 @@ torchrun --nproc_per_node=2 scripts/run_context_parallel.py \
     --steps 20 --output flux_dp_output.png
 ```
 
-除 Ring Attention 外，也可尝试 Ulysses Attention：
+默认推荐直接使用 Ulysses Attention：
 
 ```python
 cp_config = ContextParallelConfig(ulysses_degree=world_size)
+pipe.transformer.enable_parallelism(config=cp_config)
+```
+
+若需要，再按模型/后端特性切换到 Ring Attention：
+
+```python
+cp_config = ContextParallelConfig(ring_degree=world_size)
 pipe.transformer.enable_parallelism(config=cp_config)
 ```
 
@@ -415,8 +422,8 @@ python scripts/benchmark_pipeline.py \
 | `--device-type` | 否 | `npu` | `npu/cuda/cpu` |
 | `--backend` | 否 | `hccl` | 分布式后端 |
 | `--attention-backend` | 否 | 按设备自动选择 | NPU 默认 `_native_npu`，CUDA 默认 `_native_cudnn` |
-| `--ring-degree` | 否 | 自动（默认=world_size） | Ring Attention 并行度 |
-| `--ulysses-degree` | 否 | - | Ulysses Attention 并行度 |
+| `--ring-degree` | 否 | - | Ring Attention 并行度 |
+| `--ulysses-degree` | 否 | 自动（默认=world_size） | Ulysses Attention 并行度 |
 | `--dtype` | 否 | `bfloat16` | 数据类型 |
 | `--steps` | 否 | `20` | 推理步数 |
 | `--output` | 否 | `cp_output.png` | Rank0 输出图像 |
