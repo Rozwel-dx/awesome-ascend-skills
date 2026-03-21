@@ -109,6 +109,18 @@
       "description": "Analyze closed GitHub issues to create troubleshooting case studies with root cause analysis and lessons learned. Use when summarizing resolved issue troubleshooting process, creating issue case studies, documenting problem-solving methodology, extracting lessons from closed issues, or building knowledge base from issue history.",
       "source": "./github-issue-summary",
       "category": "development"
+    },
+    {
+      "name": "profiling-analysis",
+      "description": "Profiling skill set for Huawei Ascend NPU performance analysis. Analyzes step_trace_time.csv files to identify hostbound, computing, and communication bottlenecks. Use when performing performance analysis and optimization on Ascend NPU.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./profiling-analysis/profiling-main",
+        "./profiling-analysis/profiling-hostbound",
+        "./profiling-analysis/profiling-computing",
+        "./profiling-analysis/profiling-communication"
+      ]
     }
   ]
 }
