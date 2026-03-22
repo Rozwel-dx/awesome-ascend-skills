@@ -8,14 +8,14 @@ import tempfile
 import yaml
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(script_dir))
 
-from sync_types import ExternalSource, Skill, ConflictInfo
+from sync_types import ExternalSource, Skill, ConflictInfo, SyncResult
 
 
 def load_config(config_path: str) -> List[ExternalSource]:
@@ -48,6 +48,83 @@ def load_config(config_path: str) -> List[ExternalSource]:
         sources.append(source)
 
     return sources
+
+
+def detect_config_changes(old_config: str, new_config: str) -> List[ExternalSource]:
+    """Detect new or changed sources between two config YAML strings.
+
+    Args:
+        old_config: Old YAML config string (from git diff).
+        new_config: New YAML config string (current config).
+
+    Returns:
+        List of ExternalSource objects for new or changed sources.
+        Returns empty list if no changes detected.
+    """
+    try:
+        old_data = yaml.safe_load(old_config) or {}
+        new_data = yaml.safe_load(new_config) or {}
+    except yaml.YAMLError:
+        # If parsing fails, return empty list (no changes detected)
+        return []
+
+    old_sources = old_data.get("sources", [])
+    new_sources = new_data.get("sources", [])
+
+    # Create a mapping of source names to their data
+    old_sources_dict = {s["name"]: s for s in old_sources}
+    new_sources_dict = {s["name"]: s for s in new_sources}
+
+    changes = []
+
+    # Check for new sources
+    for name, new_source_data in new_sources_dict.items():
+        if name not in old_sources_dict:
+            # New source detected
+            changes.append(
+                ExternalSource(
+                    name=name,
+                    url=new_source_data["url"],
+                    branch=new_source_data.get("branch", "main"),
+                    enabled=new_source_data.get("enabled", True),
+                )
+            )
+
+    # Check for changed sources (by name and url, which uniquely identifies a source)
+    for name, new_source_data in new_sources_dict.items():
+        old_source_data = old_sources_dict.get(name)
+        if old_source_data and old_source_data["url"] != new_source_data["url"]:
+            # Source with same name but different URL (changed source)
+            changes.append(
+                ExternalSource(
+                    name=name,
+                    url=new_source_data["url"],
+                    branch=new_source_data.get("branch", "main"),
+                    enabled=new_source_data.get("enabled", True),
+                )
+            )
+
+    return changes
+
+
+def should_sync_on_pr() -> bool:
+    """Check if this is a PR context and config file was modified.
+
+    Returns:
+        True if running in PR context and .github/external-sources.yml was modified.
+        False otherwise.
+    """
+    import os
+
+    # Check if running in GitHub Actions PR context
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    if event_name != "pull_request":
+        return False
+
+    # Check if config file was modified in the PR
+    changed_files = os.environ.get("GITHUB_CHANGED_FILES", "")
+    config_file = ".github/external-sources.yml"
+    return config_file in changed_files
 
 
 def clone_external_repo(source: ExternalSource) -> Path:
@@ -233,6 +310,328 @@ def copy_skill(skill: Skill, commit_sha: str) -> bool:
     )
 
     return result.returncode == 0
+
+
+def generate_report(
+    results: SyncResult, source: ExternalSource, commit_sha: str
+) -> str:
+    """Generate markdown sync report.
+
+    Args:
+        results: SyncResult containing synced, skipped, and errors.
+        source: ExternalSource information.
+        commit_sha: Git commit SHA for this sync.
+
+    Returns:
+        Markdown formatted sync report.
+    """
+    report = f"""## 同步报告
+
+**来源**: {source.url}
+**提交**: {commit_sha}
+**时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+"""
+    synced = results.synced if isinstance(results.synced, list) else []
+    if synced:
+        report += f"### ✅ 同步成功 ({len(synced)})\n"
+        for name in synced:
+            report += f"- {name}\n"
+        report += "\n"
+
+    if results.skipped:
+        report += f"### ⏭️ 跳过 ({len(results.skipped)})\n"
+        for name, reason in results.skipped:
+            report += f"- {name}: {reason}\n"
+        report += "\n"
+
+    if results.errors:
+        report += f"### ❌ 错误 ({len(results.errors)})\n"
+        for name, error in results.errors:
+            report += f"- {name}: {error}\n"
+        report += "\n"
+
+    return report
+
+
+def create_sync_pr(results: SyncResult, source: ExternalSource, commit_sha: str) -> str:
+    """Create PR with sync report.
+
+    Args:
+        results: SyncResult containing synced, skipped, and errors.
+        source: ExternalSource information.
+        commit_sha: Git commit SHA for this sync.
+
+    Returns:
+        PR URL if successful, empty string if failed.
+    """
+    title = f"sync(external): update skills from {source.name}"
+    body = generate_report(results, source, commit_sha)
+
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--title",
+            title,
+            "--body",
+            body,
+            "--label",
+            "external-sync",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return ""
+
+
+def sync_all_sources(config_path: str = ".github/external-sources.yml") -> Dict:
+    """Sync all external sources and return summary.
+
+    This function orchestrates the entire sync process:
+    1. Load external sources from config
+    2. For each enabled source:
+       - Clone the repository
+       - Find all skills in the repository
+       - Check for conflicts with local or synced skills
+       - Copy skills that don't conflict
+       - Clean up the cloned repository
+    3. Return summary statistics
+
+    Args:
+        config_path: Path to YAML configuration file (default: .github/external-sources.yml)
+
+    Returns:
+        Dictionary with summary statistics:
+            - synced: Number of successfully synced skills
+            - skipped: Number of skipped skills (due to conflicts)
+            - errors: Number of errors encountered
+    """
+    sources = load_config(config_path)
+
+    all_synced = []
+    all_skipped = []
+    all_errors = []
+
+    for source in sources:
+        if not source.enabled:
+            print(f"Skipping disabled source: {source.name}")
+            continue
+
+        print(f"\nProcessing source: {source.name} ({source.url})")
+
+        try:
+            print(f"  Cloning {source.url} (branch: {source.branch})...")
+            repo_path = clone_external_repo(source)
+            print(f"  ✓ Cloned to {repo_path}")
+
+            skills = find_skills(repo_path, source)
+            print(f"  Found {len(skills)} skills")
+
+            local_skills = get_local_skills()
+            synced_skills = get_synced_skills()
+            print(f"  Local skills: {len(local_skills)}")
+            print(f"  Already synced: {len(synced_skills)}")
+
+            for skill in skills:
+                conflict = detect_conflicts(skill, local_skills, synced_skills)
+                if conflict:
+                    print(
+                        f"  ⏭️  Skipping {skill.name}: conflict with {conflict.external_source}"
+                    )
+                    all_skipped.append(
+                        (skill.name, f"Conflict: {conflict.external_source}")
+                    )
+                    continue
+
+                try:
+                    print(f"  Syncing {skill.name}...")
+                    success = copy_skill(skill, "latest")
+                    if success:
+                        print(f"  ✓ Synced {skill.name}")
+                        all_synced.append(skill.name)
+                    else:
+                        print(f"  ❌ Validation failed for {skill.name}")
+                        all_errors.append((skill.name, "Validation failed"))
+                except Exception as e:
+                    print(f"  ❌ Error syncing {skill.name}: {e}")
+                    all_errors.append((skill.name, str(e)))
+
+            shutil.rmtree(repo_path)
+            print(f"  ✓ Cleaned up {repo_path}")
+
+        except Exception as e:
+            print(f"  ❌ Error processing source {source.name}: {e}")
+            all_errors.append((source.name, str(e)))
+
+    # Return summary statistics
+    results = {
+        "synced": len(all_synced),
+        "skipped": len(all_skipped),
+        "errors": len(all_errors),
+    }
+
+    print("\n" + "=" * 60)
+    print("SYNC SUMMARY")
+    print("=" * 60)
+    print(f"  Synced: {results['synced']}")
+    print(f"  Skipped: {results['skipped']}")
+    print(f"  Errors: {results['errors']}")
+    print(f"  Total: {len(all_synced) + len(all_skipped) + len(all_errors)}")
+    print("=" * 60)
+
+    return results
+
+
+def update_readme(
+    synced_skills: List[Tuple[Skill, str]], readme_path: str = "README.md"
+) -> None:
+    """Update README.md with external skills table.
+
+    Args:
+        synced_skills: List of tuples (Skill, commit_sha) that were successfully synced
+        readme_path: Path to README.md file (default: "README.md")
+    """
+    import re
+
+    readme_file = Path(readme_path)
+    content = readme_file.read_text(encoding="utf-8")
+
+    def get_description(skill_path: Path) -> str:
+        """Get description from SKILL.md frontmatter."""
+        parsed = parse_skill_md(skill_path)
+        return parsed.get("description", "No description available")
+
+    # Build external skills table
+    table_lines = ["## 外部 Skills (External Skills)", ""]
+    table_lines.append("> 以下 skills 从外部仓库自动同步，请勿手动修改。")
+    table_lines.append("| Skill | 来源 | 描述 |")
+    table_lines.append("|-------|------|------|")
+
+    for skill, commit_sha in synced_skills:
+        skill_path = skill.path
+        description = get_description(skill_path)
+
+        # Format source link
+        source_name = skill.source.name
+        source_url = skill.source.url
+        source_link = f"[{source_name}]({source_url})"
+
+        # Format skill link
+        skill_link = f"[{skill.name}](external/{source_name}/{skill.name}/SKILL.md)"
+
+        # Clean description for markdown table
+        clean_description = description.replace("\n", " ").strip()
+
+        # Add row to table
+        table_lines.append(f"| {skill_link} | {source_link} | {clean_description} |")
+
+    table_lines.append("")
+    table_lines.append("---")
+
+    # Find insertion point - after "## Skill 列表"
+    skill_list_match = re.search(r"## Skill 列表\n\n", content)
+    if not skill_list_match:
+        # If "## Skill 列表" not found, add at end before "## Skill 工作原理"
+        work_principles_match = re.search(r"## Skill 工作原理", content)
+        if work_principles_match:
+            insertion_point = work_principles_match.start()
+        else:
+            insertion_point = len(content)
+    else:
+        # Skip the "---" separator after "## Skill 列表"
+        next_dash = content.find("---", skill_list_match.end())
+        if next_dash != -1:
+            insertion_point = next_dash + 3
+        else:
+            insertion_point = content.find("## Skill 工作原理", skill_list_match.end())
+            if insertion_point == -1:
+                insertion_point = len(content)
+
+    # Replace or insert section
+    if "## 外部 Skills (External Skills)" in content:
+        pattern = r"## 外部 Skills \(External Skills\)(.*?)\n---"
+        replacement = "\n".join(table_lines)
+        content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+    else:
+        content = (
+            content[:insertion_point]
+            + "\n".join(table_lines)
+            + "\n"
+            + content[insertion_point:]
+        )
+
+    # Write back to file
+    readme_file.write_text(content, encoding="utf-8")
+
+
+def update_marketplace(
+    synced_skills: List[Tuple[Skill, str]],
+    marketplace_path: str = ".claude-plugin/marketplace.json",
+) -> None:
+    """Update marketplace.json with external skills entries.
+
+    Args:
+        synced_skills: List of tuples (Skill, commit_sha) that were successfully synced
+        marketplace_path: Path to marketplace.json file (default: .claude-plugin/marketplace.json)
+
+    Reads existing marketplace.json, adds/updates external skill entries, and writes back.
+    External skills are marked with `external: true` and include source-url.
+    """
+    import json
+
+    marketplace_file = Path(marketplace_path)
+
+    if marketplace_file.exists():
+        with marketplace_file.open("r", encoding="utf-8") as f:
+            marketplace = json.load(f)
+    else:
+        marketplace = {
+            "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+            "name": "awesome-ascend-skills",
+            "version": "1.0.0",
+            "description": "A comprehensive knowledge base for Huawei Ascend NPU development, structured as distributed AI Agent Skills.",
+            "owner": {
+                "name": "Ascend AI Coding",
+                "email": "ascend-ai-coding@example.com",
+            },
+            "plugins": [],
+        }
+
+    plugins = marketplace.get("plugins", [])
+    existing_names = {plugin["name"] for plugin in plugins}
+
+    for skill, commit_sha in synced_skills:
+        skill_name = skill.name
+        source_name = skill.source.name
+        source_url = skill.source.url
+
+        if skill_name in existing_names:
+            plugins = [p for p in plugins if p["name"] != skill_name]
+            existing_names.remove(skill_name)
+
+        external_entry = {
+            "name": skill_name,
+            "description": f"External skill from {source_name}. Synced from {source_url} (commit: {commit_sha})",
+            "source": f"./external/{source_name}/{skill_name}",
+            "category": "external",
+            "external": True,
+            "source-url": source_url,
+            "source-branch": skill.source.branch,
+        }
+
+        plugins.append(external_entry)
+        existing_names.add(skill_name)
+
+    marketplace["plugins"] = plugins
+    with marketplace_file.open("w", encoding="utf-8") as f:
+        json.dump(marketplace, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ Updated marketplace.json with {len(synced_skills)} external skills")
 
 
 def main():
