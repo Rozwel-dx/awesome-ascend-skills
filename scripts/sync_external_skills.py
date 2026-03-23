@@ -559,6 +559,7 @@ def update_readme(
     # Build external skills table
     table_lines = ["## 外部 Skills (External Skills)", ""]
     table_lines.append("> 以下 skills 从外部仓库自动同步，请勿手动修改。")
+    table_lines.append("")  # Empty line required for markdown table to render correctly
     table_lines.append("| Skill | 来源 | 描述 |")
     table_lines.append("|-------|------|------|")
 
@@ -597,26 +598,20 @@ def update_readme(
             + content[section_end + 4 :]
         )
     else:
-        # Insert after "## 外部 Skills 同步" section (before "## 提交 PR")
-        insert_marker = "\n---\n\n## 提交 PR"
+        # Insert after "## Skill 列表" (before "## Skill 工作原理")
+        insert_marker = "\n---\n\n## Skill 工作原理"
         if insert_marker in content:
             content = content.replace(
-                insert_marker, "\n" + "\n".join(table_lines) + "\n\n## 提交 PR"
+                insert_marker, "\n" + "\n".join(table_lines) + "\n\n## Skill 工作原理"
             )
         else:
-            # Fallback: insert before first section after "外部 Skills 同步"
-            sync_section = content.find("## 外部 Skills 同步")
-            if sync_section != -1:
-                next_section = content.find("\n## ", sync_section + 1)
-                if next_section != -1:
-                    content = (
-                        content[:next_section]
-                        + "\n\n"
-                        + "\n".join(table_lines)
-                        + content[next_section:]
-                    )
-                else:
-                    content = content.rstrip() + "\n\n" + "\n".join(table_lines) + "\n"
+            # Fallback: insert before "## 外部 Skills 同步" section
+            insert_marker = "\n---\n\n## 外部 Skills 同步"
+            if insert_marker in content:
+                content = content.replace(
+                    insert_marker,
+                    "\n" + "\n".join(table_lines) + "\n\n## 外部 Skills 同步",
+                )
             else:
                 content = content.rstrip() + "\n\n" + "\n".join(table_lines) + "\n"
 
