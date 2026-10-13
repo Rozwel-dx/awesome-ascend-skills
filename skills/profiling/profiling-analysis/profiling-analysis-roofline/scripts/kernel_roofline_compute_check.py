@@ -606,7 +606,7 @@ def print_report(rows: List[Dict[str, Any]], args: argparse.Namespace, csv_path:
     modeled_th = sum(r["t_th"] for r in ok)
 
     print("=" * 100)
-    print("算力瓶颈算子 Roofline 核对报告 (profiling-analysis-computing)")
+    print("算力瓶颈算子 Roofline 核对报告 (profiling-analysis-roofline)")
     print("  输入: %s" % os.path.abspath(csv_path))
     print("  理论耗时 = max(计算量/算力, 搬运量/带宽)；效率 = 理论/实际")
     print("  FP16/BF16 算力 %.1f TFLOPS | INT8/FP8 Cube %.1f TOPS（×%.2f）" % (
